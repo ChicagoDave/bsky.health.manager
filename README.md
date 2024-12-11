@@ -169,6 +169,7 @@ GNU GENERAL PUBLIC LICENSE
 - Built with [AT Protocol](https://atproto.com/)
 - Uses [BlueSky Social](https://bsky.social) APIs
 - Inspired by the BlueSky community's need for better account management tools
+- 99% of this code was created by Claude.ai Sonnet 3.5 with guidance from David Cornelson
 
 ## Support
 
