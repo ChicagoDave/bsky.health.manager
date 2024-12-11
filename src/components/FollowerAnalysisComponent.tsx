@@ -1,51 +1,66 @@
 import { useState, useMemo } from 'react'
 import { useQuery } from 'react-query'
 import { bskyService } from '@/services/bsky'
-import { ActionBar } from './followers/ActionBar'
+import { whitelistService } from '@/services/whitelist'
+import { FilterStats, SortField, filterRules } from '@/types/bsky'
+import type { FollowerAnalysis, AnalysisProgress } from '@/types/bsky'
+import ProgressBar from './followers/ProgressBar'
 import { FilterCategories } from './followers/FilterCategories'
 import { FollowersTable } from './followers/FollowersTable'
-import { ProgressBar } from './followers/ProgressBar'
-import { filterRules, FilterStats, SortField } from './followers/types'
-import type { FollowerAnalysis, AnalysisProgress } from '@/types/bsky'
+import ActionBar from './followers/ActionBar'
+import SignOutButton from './signoutbutton'
 
 export default function FollowerAnalysisComponent() {
+  const [startTime] = useState(Date.now())
+  const [progress, setProgress] = useState<AnalysisProgress>({ total: 0, current: 0, status: '' })
+  const [whitelistedFollowers, setWhitelistedFollowers] = useState<FollowerAnalysis[]>([])
+  const [greylistedFollowers, setGreylistedFollowers] = useState<FollowerAnalysis[]>([])
+  const [regularFollowers, setRegularFollowers] = useState<FollowerAnalysis[]>([])
   const [selectedFollowers, setSelectedFollowers] = useState<Set<string>>(new Set())
   const [activeFilters, setActiveFilters] = useState<Set<string>>(new Set())
-  const [isBlocking, setIsBlocking] = useState(false)
-  const [blockingProgress, setBlockingProgress] = useState<{current: number; total: number} | null>(null)
-  const [sortField, setSortField] = useState<SortField>('lastPost')
+  const [sortField, setSortField] = useState<SortField>('issues')
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc')
-  const [analysisProgress, setAnalysisProgress] = useState<AnalysisProgress | null>(null)
+  const [isBlocking, setIsBlocking] = useState(false)
+  const [blockingProgress, setBlockingProgress] = useState<{ current: number; total: number } | null>(null)
 
-  const { data: followers, isLoading, error, refetch } = useQuery<FollowerAnalysis[], Error>(
-    'followers',
+  // Fetch followers data
+  const { isLoading, error } = useQuery(
+    ['followers', bskyService.getDid()],
     async () => {
       const userDid = bskyService.getDid()
       if (!userDid) throw new Error('Not logged in')
-      return bskyService.getFollowersWithAnalysis(userDid, setAnalysisProgress)
+      return bskyService.getFollowersWithAnalysis(userDid, setProgress)
     },
     {
-      enabled: bskyService.isLoggedIn(),
       staleTime: 5 * 60 * 1000,
-      retry: false
+      refetchOnWindowFocus: false,
+      onSuccess: (followers) => {
+        const whitelisted = followers.filter(f => f.isWhitelisted)
+        const greylisted = followers.filter(f => f.isGreylisted && !f.isWhitelisted)
+        const regular = followers.filter(f => !f.isWhitelisted && !f.isGreylisted)
+        setWhitelistedFollowers(whitelisted)
+        setGreylistedFollowers(greylisted)
+        setRegularFollowers(regular)
+      }
     }
   )
 
+  // Calculate filter statistics
   const filterStats: FilterStats[] = useMemo(() => {
-    if (!followers) return []
-    
+    if (!regularFollowers) return []
+
     return filterRules.map(rule => ({
       rule,
-      count: followers.filter(rule.check).length,
-      followers: followers.filter(rule.check)
+      count: regularFollowers.filter(follower => rule.check(follower)).length,
+      followers: regularFollowers.filter(follower => rule.check(follower))
     }))
-  }, [followers])
+  }, [regularFollowers])
 
-  const filteredFollowers = useMemo(() => {
-    if (!followers) return []
-    
-    let filtered = [...followers]
-    
+  // Filter and sort followers
+  const displayedFollowers = useMemo(() => {
+    let filtered = [...regularFollowers]
+
+    // Apply active filters
     if (activeFilters.size > 0) {
       filtered = filtered.filter(follower => {
         return Array.from(activeFilters).some(filterId => {
@@ -55,33 +70,48 @@ export default function FollowerAnalysisComponent() {
       })
     }
 
-    return filtered.sort((a, b) => {
+    // Apply sorting
+    filtered.sort((a, b) => {
+      let comparison = 0
       switch (sortField) {
         case 'handle':
-          return sortDirection === 'asc' 
-            ? a.handle.localeCompare(b.handle)
-            : b.handle.localeCompare(a.handle)
+          comparison = a.handle.localeCompare(b.handle)
+          break
         case 'issues':
-          return sortDirection === 'asc'
-            ? a.issues.length - b.issues.length
-            : b.issues.length - a.issues.length
+          comparison = a.issues.length - b.issues.length
+          break
         case 'lastPost':
-          return sortDirection === 'asc'
-            ? (a.indexedAt || '').localeCompare(b.indexedAt || '')
-            : (b.indexedAt || '').localeCompare(a.indexedAt || '')
-        default:
-          return 0
+          comparison = ((a.indexedAt || '') > (b.indexedAt || '')) ? 1 : -1
+          break
       }
+      return sortDirection === 'asc' ? comparison : -comparison
     })
-  }, [followers, activeFilters, sortField, sortDirection])
+
+    return filtered
+  }, [regularFollowers, activeFilters, sortField, sortDirection])
+
+  const handleSort = (field: SortField) => {
+    if (field === sortField) {
+      setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc')
+    } else {
+      setSortField(field)
+      setSortDirection('desc')
+    }
+  }
 
   const handleSelectAll = () => {
-    if (!filteredFollowers) return
-    setSelectedFollowers(new Set(filteredFollowers.map(f => f.did)))
+    setSelectedFollowers(new Set(displayedFollowers.map(f => f.did)))
   }
 
   const handleClearSelection = () => {
     setSelectedFollowers(new Set())
+  }
+
+  const handleSelectClean = () => {
+    const cleanFollowers = displayedFollowers.filter(follower => 
+      !follower.hasIssues && !follower.isWhitelisted && !follower.isGreylisted
+    )
+    setSelectedFollowers(new Set(cleanFollowers.map(f => f.did)))
   }
 
   const handleToggleFollower = (did: string) => {
@@ -94,29 +124,74 @@ export default function FollowerAnalysisComponent() {
     setSelectedFollowers(newSelected)
   }
 
-  const handleBlockSelected = async () => {
-    if (selectedFollowers.size === 0) return
-    
+  const handleExport = () => {
+    const selectedData = displayedFollowers
+      .filter(f => selectedFollowers.has(f.did))
+      .map(f => ({
+        handle: f.handle,
+        displayName: f.displayName || '',
+        issues: f.issues.join('; '),
+        lastActivity: f.indexedAt || 'Never'
+      }))
+
+    const csv = [
+      ['Handle', 'Display Name', 'Issues', 'Last Activity'],
+      ...selectedData.map(row => Object.values(row))
+    ].map(row => row.join(',')).join('\n')
+
+    const blob = new Blob([csv], { type: 'text/csv' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = 'follower-analysis.csv'
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  }
+
+  const handleGreylist = async () => {
+    const selectedDids = Array.from(selectedFollowers)
+    if (!selectedDids.length) return
+
+    const followers = [...regularFollowers]
+    const newGreylisted: FollowerAnalysis[] = []
+    const remainingRegular: FollowerAnalysis[] = []
+
+    for (const follower of followers) {
+      if (selectedDids.includes(follower.did)) {
+        await whitelistService.addToGreylist(follower.did, follower.handle)
+        newGreylisted.push({
+          ...follower,
+          isGreylisted: true
+        })
+      } else {
+        remainingRegular.push(follower)
+      }
+    }
+
+    setGreylistedFollowers(prev => [...prev, ...newGreylisted])
+    setRegularFollowers(remainingRegular)
+    setSelectedFollowers(new Set())
+  }
+
+  const handleBlock = async () => {
+    const selectedDids = Array.from(selectedFollowers)
+    if (!selectedDids.length) return
+
     setIsBlocking(true)
-    setBlockingProgress({ current: 0, total: selectedFollowers.size })
-    
+    let blocked = 0
+
     try {
-      const dids = Array.from(selectedFollowers)
-      const results = []
-      
-      for (let i = 0; i < dids.length; i++) {
-        const result = await bskyService.blockAccount(dids[i])
-        results.push({ did: dids[i], ...result })
-        setBlockingProgress({ current: i + 1, total: dids.length })
+      for (const did of selectedDids) {
+        setBlockingProgress({ current: blocked + 1, total: selectedDids.length })
+        await bskyService.blockAccount(did)
+        blocked++
       }
-      
-      const failures = results.filter(r => !r.success)
-      if (failures.length > 0) {
-        console.error('Some blocks failed:', failures)
-      }
-      
+
+      // Refresh data after blocking
       setSelectedFollowers(new Set())
-      refetch()
+      await bskyService.refreshSession()
     } catch (error) {
       console.error('Error blocking accounts:', error)
     } finally {
@@ -125,61 +200,16 @@ export default function FollowerAnalysisComponent() {
     }
   }
 
-  const handleExportAnalysis = () => {
-    if (!filteredFollowers) return
-    
-    const csvContent = [
-      ['Handle', 'Display Name', 'Issues', 'Last Post'].join(','),
-      ...filteredFollowers.map(f => [
-        f.handle,
-        f.displayName || '',
-        f.issues.join(';'),
-        f.indexedAt || ''
-      ].join(','))
-    ].join('\n')
-    
-    const blob = new Blob([csvContent], { type: 'text/csv' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = 'follower-analysis.csv'
-    a.click()
-    URL.revokeObjectURL(url)
-  }
-
-  const handleSort = (field: SortField) => {
-    if (sortField === field) {
-      setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc')
-    } else {
-      setSortField(field)
-      setSortDirection('asc')
-    }
-  }
-
-  const handleSignOut = async () => {
-    try {
-      await bskyService.signOut()
-      window.location.reload()
-    } catch (error) {
-      console.error('Error signing out:', error)
-    }
-  }
-
-  if (!bskyService.isLoggedIn()) {
+  if (isLoading) {
     return (
-      <div className="text-center p-8">
-        <p className="text-lg mb-4">Please log in to analyze your followers</p>
-      </div>
-    )
-  }
-
-  if (isLoading || (analysisProgress && analysisProgress.current < analysisProgress.total)) {
-    return (
-      <div className="container mx-auto p-4">
-        <ProgressBar 
-          total={analysisProgress?.total || 0}
-          current={analysisProgress?.current || 0}
-          status={analysisProgress?.status || 'Initializing...'}
+      <div className="container mx-auto p-4 max-w-6xl">
+        <ProgressBar
+          total={progress.total}
+          current={progress.current}
+          status={progress.status}
+          blockedCount={progress.blockedCount}
+          whitelistedCount={whitelistedFollowers.length}
+          startTime={startTime}
         />
       </div>
     )
@@ -187,40 +217,24 @@ export default function FollowerAnalysisComponent() {
 
   if (error) {
     return (
-      <div className="text-red-500 p-4">
-        Error loading followers: {error.message}
-        <button 
-          onClick={() => refetch()} 
-          className="ml-4 px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600"
-        >
-          Retry
-        </button>
+      <div className="container mx-auto p-4 max-w-6xl">
+        <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded">
+          Error loading followers: {error instanceof Error ? error.message : 'Unknown error'}
+        </div>
       </div>
     )
   }
 
   return (
-    <div className="container mx-auto p-4 space-y-6">
-      <div className="flex justify-between items-center">
-        <h1 className="text-2xl font-bold">Follower Analysis</h1>
-        <button
-          onClick={handleSignOut}
-          className="px-4 py-2 bg-red-500 text-white rounded hover:bg-red-600"
-        >
-          Sign Out
-        </button>
-      </div>
-
-      <div className="flex justify-between items-center">
-        <ActionBar
-          onSelectAll={handleSelectAll}
-          onClearSelection={handleClearSelection}
-          onExport={handleExportAnalysis}
-          onBlock={handleBlockSelected}
-          selectedCount={selectedFollowers.size}
-          isBlocking={isBlocking}
-          blockingProgress={blockingProgress}
-        />
+    <div className="container mx-auto p-4 max-w-6xl">
+      <div className="mb-6 flex justify-between items-center">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Follower Analysis</h1>
+          <p className="text-gray-600">
+            Analyze and manage your followers based on various criteria
+          </p>
+        </div>
+        <SignOutButton />
       </div>
 
       <FilterCategories
@@ -229,8 +243,23 @@ export default function FollowerAnalysisComponent() {
         onFilterChange={setActiveFilters}
       />
 
+      <ActionBar
+        onSelectAll={handleSelectAll}
+        onClearSelection={handleClearSelection}
+        onSelectClean={handleSelectClean}
+        onGreylist={handleGreylist}
+        onExport={handleExport}
+        onBlock={handleBlock}
+        selectedCount={selectedFollowers.size}
+        isBlocking={isBlocking}
+        blockingProgress={blockingProgress}
+        whitelistedCount={whitelistedFollowers.length}
+        greylistedCount={greylistedFollowers.length}
+        totalFollowers={whitelistedFollowers.length + greylistedFollowers.length + regularFollowers.length}
+      />
+
       <FollowersTable
-        followers={filteredFollowers}
+        followers={displayedFollowers}
         selectedFollowers={selectedFollowers}
         onToggleFollower={handleToggleFollower}
         sortField={sortField}

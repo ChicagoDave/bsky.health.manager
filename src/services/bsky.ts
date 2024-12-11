@@ -2,6 +2,7 @@ import { Agent, AppBskyActorDefs } from '@atproto/api'
 import { BrowserOAuthClient, OAuthSession } from '@atproto/oauth-client-browser'
 import { FollowerAnalyzerService } from './follower-analyzer'
 import { whitelistService } from './whitelist'
+import { accessControlService } from './access-control'
 import type { FollowerAnalysis, AnalysisProgress } from '@/types/bsky'
 
 interface BlockResult {
@@ -32,10 +33,37 @@ export class BlueSkyService {
     })
   }
 
+  private checkAuthorization() {
+    if (!accessControlService.isAuthorized()) {
+      throw new Error('Unauthorized access')
+    }
+  }
+
   async init() {
     try {
       const result = await this.oauthClient.init()
       if (result?.session) {
+        // Re-verify authorization using stored handle
+        const storedHandle = accessControlService.getAuthorizedHandle()
+        if (storedHandle) {
+          // Auto-verify stored authorization
+          const accessResult = await accessControlService.checkAccess(storedHandle)
+          if (!accessResult.allowed) {
+            await this.signOut()
+            return null
+          }
+        } else {
+          // If no stored handle, try to get it from the session
+          const handle = await this.resolveHandleFromDid(result.session.did)
+          if (handle) {
+            const accessResult = await accessControlService.checkAccess(handle)
+            if (!accessResult.allowed) {
+              await this.signOut()
+              return null
+            }
+          }
+        }
+  
         this.currentSession = result.session
         this.agent = new Agent(result.session)
         this.analyzer = new FollowerAnalyzerService(this.agent)
@@ -49,8 +77,28 @@ export class BlueSkyService {
     }
   }
 
+  private async resolveHandleFromDid(did: string): Promise<string | null> {
+    if (!this.agent) return null
+    try {
+      const profile = await this.agent.getProfile({ actor: did })
+      return profile.data.handle
+    } catch (error) {
+      console.error('Error resolving handle:', error)
+      return null
+    }
+  }
+
   async signIn(handle: string, opts?: { state?: string }) {
     try {
+      // Check access before attempting OAuth flow
+      const accessResult = await accessControlService.checkAccess(handle)
+      if (!accessResult.allowed) {
+        return {
+          success: false,
+          error: accessResult.message || 'Access denied'
+        }
+      }
+
       await this.oauthClient.signIn(handle, {
         ...opts,
         scope: 'atproto transition:generic',
@@ -69,12 +117,23 @@ export class BlueSkyService {
   }
 
   async refreshSession(): Promise<boolean> {
+    this.checkAuthorization()
     try {
       const did = this.getDid()
       if (!did) return false
       
       const session = await this.oauthClient.restore(did)
       if (session) {
+        // Verify authorization is still valid
+        const handle = await this.resolveHandleFromDid(did)
+        if (handle) {
+          const accessResult = await accessControlService.checkAccess(handle)
+          if (!accessResult.allowed) {
+            await this.signOut()
+            return false
+          }
+        }
+
         this.currentSession = session
         this.agent = new Agent(session)
         this.analyzer = new FollowerAnalyzerService(this.agent)
@@ -88,6 +147,7 @@ export class BlueSkyService {
   }
 
   async getProfile(did: string): Promise<AppBskyActorDefs.ProfileViewDetailed> {
+    this.checkAuthorization()
     if (!this.agent) throw new Error('Agent not initialized')
     
     try {
@@ -112,6 +172,7 @@ export class BlueSkyService {
     userDid: string,
     onProgress?: (progress: AnalysisProgress) => void
   ): Promise<FollowerAnalysis[]> {
+    this.checkAuthorization()
     try {
       if (!this.agent || !this.analyzer) throw new Error('Service not initialized')
       return this.analyzer.analyzeFollowers(userDid, onProgress)
@@ -133,6 +194,7 @@ export class BlueSkyService {
   }
 
   async blockAccount(did: string): Promise<BlockResult> {
+    this.checkAuthorization()
     try {
       if (!this.agent) throw new Error('Agent not initialized')
       
@@ -174,6 +236,7 @@ export class BlueSkyService {
   }
 
   async blockAccounts(dids: string[]): Promise<Array<BlockResult & { did: string }>> {
+    this.checkAuthorization()
     const results = []
     for (const did of dids) {
       const result = await this.blockAccount(did)
@@ -183,6 +246,7 @@ export class BlueSkyService {
   }
 
   async toggleWhitelist(did: string, handle: string): Promise<void> {
+    this.checkAuthorization()
     const isWhitelisted = await whitelistService.isWhitelisted(did)
     if (isWhitelisted) {
       await whitelistService.removeFromWhitelist(did)
@@ -196,11 +260,13 @@ export class BlueSkyService {
   }
 
   isLoggedIn(): boolean {
-    return this.agent !== null && this.currentSession !== null
+    return this.agent !== null && this.currentSession !== null && accessControlService.isAuthorized()
   }
 
   async signOut(): Promise<void> {
     try {
+      accessControlService.clearAuthorization()
+      
       if (this.currentSession?.did) {
         try {
           await this.currentSession.signOut()
@@ -208,6 +274,8 @@ export class BlueSkyService {
           console.error('Error destroying oauth session:', e)
         }
       }
+
+      this.analyzer?.clearCache()
 
       this.agent = null
       this.currentSession = null

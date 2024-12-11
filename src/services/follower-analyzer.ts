@@ -4,6 +4,7 @@ import { whitelistService } from './whitelist'
 
 export class FollowerAnalyzerService {
   private batchDelay = 100 // ms between API calls
+  private cachedAnalysis: Map<string, FollowerAnalysis> = new Map()
 
   constructor(private agent: Agent) {}
 
@@ -33,10 +34,8 @@ export class FollowerAnalyzerService {
           cursor
         })
 
-        // Count only non-blocked followers
         actualCount += response.data.followers.filter(f => !f.viewer?.blocking).length
         cursor = response.data.cursor
-
         await this.delay(this.batchDelay)
       } catch (error) {
         console.error('Error getting follower count:', error)
@@ -49,10 +48,22 @@ export class FollowerAnalyzerService {
 
   private async analyzeFollower(
     follower: AppBskyActorDefs.ProfileView,
+    skipDetailedAnalysis = false
   ): Promise<FollowerAnalysis> {
+    // Check cache first
+    const cached = this.cachedAnalysis.get(follower.did)
+    if (cached) {
+      // Update whitelist status in case it changed
+      const isWhitelisted = await whitelistService.isWhitelisted(follower.did)
+      return {
+        ...cached,
+        isWhitelisted,
+      }
+    }
+
     // Check whitelist and mutual status
     const isWhitelisted = await whitelistService.isWhitelisted(follower.did)
-    const isMutual = await this.checkMutualStatus(follower.did)
+    const isMutual = skipDetailedAnalysis ? false : await this.checkMutualStatus(follower.did)
 
     // If mutual, add to whitelist automatically
     if (isMutual && !isWhitelisted) {
@@ -67,17 +78,17 @@ export class FollowerAnalyzerService {
       hasIssues: false,
       issues: [],
       isMutual,
-      isWhitelisted: isWhitelisted || isMutual
+      isWhitelisted: isWhitelisted || isMutual,
+      indexedAt: undefined
     }
 
-    // Skip detailed analysis for whitelisted/mutual accounts
-    if (!analysis.isWhitelisted) {
+    // Skip detailed analysis for whitelisted/mutual accounts or if explicitly requested
+    if (!analysis.isWhitelisted && !skipDetailedAnalysis) {
       try {
         const profile = await this.agent.getProfile({ actor: follower.did })
         analysis.profile = profile.data
         analysis.indexedAt = profile.data.indexedAt
 
-        // Check posts
         const feedResponse = await this.agent.getAuthorFeed({
           actor: follower.did,
           limit: 1
@@ -88,14 +99,12 @@ export class FollowerAnalyzerService {
           analysis.hasIssues = true
         }
 
-        // Check handle for numbers
         const numberCount = (follower.handle.match(/\d/g) || []).length
         if (numberCount > 2) {
           analysis.issues.push('Handle contains more than 2 numbers')
           analysis.hasIssues = true
         }
 
-        // Check follower/following ratio
         if (profile.data.followersCount && profile.data.followsCount) {
           const ratio = profile.data.followersCount / profile.data.followsCount
           if (ratio < 0.1 && profile.data.followsCount > 100) {
@@ -104,7 +113,6 @@ export class FollowerAnalyzerService {
           }
         }
 
-        // Check for default avatar
         if (!follower.avatar) {
           analysis.issues.push('Default avatar')
           analysis.hasIssues = true
@@ -118,6 +126,8 @@ export class FollowerAnalyzerService {
       }
     }
 
+    // Cache the analysis
+    this.cachedAnalysis.set(follower.did, analysis)
     return analysis
   }
 
@@ -151,7 +161,6 @@ export class FollowerAnalyzerService {
           })
 
           for (const follower of response.data.followers) {
-            // Skip blocked accounts
             if (follower.viewer?.blocking) continue
 
             onProgress?.({
@@ -161,8 +170,12 @@ export class FollowerAnalyzerService {
               blockedCount: estimatedBlockedCount
             })
 
+            // Check if we have a cached analysis that's whitelisted
+            const cached = this.cachedAnalysis.get(follower.did)
+            const skipDetailedAnalysis = cached?.isWhitelisted || false
+
             try {
-              const analysis = await this.analyzeFollower(follower)
+              const analysis = await this.analyzeFollower(follower, skipDetailedAnalysis)
               followers.push(analysis)
               analyzedCount++
 
@@ -175,8 +188,6 @@ export class FollowerAnalyzerService {
             } catch (error) {
               console.error(`Error analyzing follower ${follower.handle}:`, error)
             }
-
-            await this.delay(this.batchDelay)
           }
 
           cursor = response.data.cursor
@@ -184,7 +195,7 @@ export class FollowerAnalyzerService {
           if (error instanceof Error && 
              (error.message.includes('InvalidToken') || 
               error.message.includes('ExpiredToken'))) {
-            throw error // Let the BlueSky service handle session refresh
+            throw error
           }
           console.error('Error fetching followers:', error)
           throw error
@@ -204,5 +215,9 @@ export class FollowerAnalyzerService {
       console.error('Error analyzing followers:', error)
       throw error
     }
+  }
+
+  clearCache() {
+    this.cachedAnalysis.clear()
   }
 }

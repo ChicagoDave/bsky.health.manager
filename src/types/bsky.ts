@@ -1,23 +1,24 @@
-import { AppBskyActorDefs } from '@atproto/api'
+import type { AppBskyActorDefs } from '@atproto/api'
 
 export interface FollowerAnalysis {
   did: string
   handle: string
   displayName?: string
   avatar?: string
-  indexedAt?: string
   hasIssues: boolean
   issues: string[]
-  profile?: AppBskyActorDefs.ProfileViewDetailed
   isMutual: boolean
-  isWhitelisted?: boolean
+  isWhitelisted: boolean
+  profile?: AppBskyActorDefs.ProfileViewDetailed
+  isGreylisted?: boolean
+  indexedAt?: string
 }
 
 export interface AnalysisProgress {
   total: number
   current: number
   status: string
-  blockedCount: number
+  blockedCount?: number
 }
 
 export interface FilterRule {
@@ -26,6 +27,14 @@ export interface FilterRule {
   description: string
   check: (profile: FollowerAnalysis) => boolean
 }
+
+export interface FilterStats {
+  rule: FilterRule
+  count: number
+  followers: FollowerAnalysis[]
+}
+
+export type SortField = 'handle' | 'issues' | 'lastPost'
 
 export const filterRules: FilterRule[] = [
   {

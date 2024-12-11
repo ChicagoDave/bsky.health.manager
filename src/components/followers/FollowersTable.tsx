@@ -28,6 +28,19 @@ export function FollowersTable({
     })
   }
 
+  const getRowClassName = (follower: FollowerAnalysis) => {
+    if (follower.isWhitelisted) return 'bg-green-50'
+    if (follower.isGreylisted) return 'bg-gray-50'
+    if (follower.hasIssues) return 'bg-red-50'
+    return ''
+  }
+
+  const getStatusText = (follower: FollowerAnalysis) => {
+    if (follower.isWhitelisted) return '(Whitelisted)'
+    if (follower.isGreylisted) return '(Greylisted)'
+    return ''
+  }
+
   return (
     <div className="bg-white rounded-lg shadow overflow-hidden">
       <table className="min-w-full divide-y divide-gray-200">
@@ -91,9 +104,7 @@ export function FollowersTable({
             followers.map((follower) => (
               <tr 
                 key={follower.did}
-                className={`hover:bg-gray-50 ${
-                  follower.hasIssues ? 'bg-red-50' : ''
-                }`}
+                className={`hover:bg-gray-50 ${getRowClassName(follower)}`}
               >
                 <td className="px-3 py-4 whitespace-nowrap">
                   <input
@@ -117,6 +128,10 @@ export function FollowersTable({
                     <div className="ml-4">
                       <div className="font-medium text-gray-900">
                         {follower.displayName || follower.handle}
+                        {' '}
+                        <span className="text-sm text-gray-500">
+                          {getStatusText(follower)}
+                        </span>
                       </div>
                       <div className="text-sm text-gray-500">
                         {follower.handle}
