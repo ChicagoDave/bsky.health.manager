@@ -8,7 +8,7 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "deploy": "npm run build && rsync -av --delete dist/ bskyhealth.plover.net:/home/dave/bskyhealth/public_html/"
+    "deploy": "vite build && scp -r dist/* dave@plover.net:/home/dave/bskyhealth/public_html/"
   },
   "dependencies": {
     "@atproto/api": "^0.13.19",
@@ -17,6 +17,7 @@
     "@headlessui/react": "^2.2.0",
     "@heroicons/react": "^2.2.0",
     "autoprefixer": "^10.4.20",
+    "idb": "^8.0.0",
     "postcss": "^8.4.49",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",

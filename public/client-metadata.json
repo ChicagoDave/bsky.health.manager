@@ -1,0 +1,10 @@
+{
+    "client_id": "https://bskyhealth.plover.net/client-metadata.json",
+    "client_name": "BSky Health Manager",
+    "redirect_uris": ["https://bskyhealth.plover.net/"],
+    "scope": "transition:generic atproto transition:chat.bsky",
+    "grant_types": ["authorization_code", "refresh_token"],
+    "application_type": "web",
+    "token_endpoint_auth_method": "none",
+    "dpop_bound_access_tokens": true
+  }

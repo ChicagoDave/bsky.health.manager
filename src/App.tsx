@@ -5,14 +5,30 @@ import FollowerAnalysisComponent from './components/FollowerAnalysisComponent'
 
 function App() {
   const [isInitialized, setIsInitialized] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     const initializeApp = async () => {
-      await bskyService.init()
-      setIsInitialized(true)
+      try {
+        await bskyService.init()
+        setIsInitialized(true)
+      } catch (err) {
+        console.error('Initialization error:', err)
+        setError(err instanceof Error ? err.message : 'Failed to initialize application')
+      }
     }
     initializeApp()
   }, [])
+
+  if (error) {
+    return (
+      <div className="flex justify-center items-center min-h-screen">
+        <div className="text-red-500 p-4">
+          Error: {error}
+        </div>
+      </div>
+    )
+  }
 
   if (!isInitialized) {
     return (
